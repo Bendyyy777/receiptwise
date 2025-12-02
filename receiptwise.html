@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ReceiptWise - Simple Finance Tracker</title>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; background: #f5f5f5; }
+        .container { display: none; } /* Hide all initially */
+        .nav { display: flex; gap: 10px; margin-bottom: 20px; }
+        .nav button { padding: 10px 20px; background: #4CAF50; color: white; border: none; cursor: pointer; border-radius: 5px; }
+        .nav button.active { background: #45a049; }
+        #upload { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        #upload input[type="file"] { margin: 10px 0; }
+        #extracted { margin-top: 20px; padding: 15px; background: #e8f5e8; border-radius: 5px; }
+        #dashboard, #suggestions { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        #chart { height: 300px; margin: 20px 0; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #f2f2f2; }
+        .suggestion { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .warning { background: #fff3cd; border: 1px solid #ffeaa7; }
+        .info { background: #d1ecf1; border: 1px solid #bee5eb; }
+        .metric { font-size: 2em; color: #4CAF50; }
+        @media (max-width: 768px) { .nav { flex-direction: column; } }
+    </style>
+</head>
+<body>
+    <h1>🧾 ReceiptWise: Easy Receipt Tracker</h1>
+    <div class="nav">
+        <button onclick="showPage('upload')" class="active">📸 Upload</button>
+        <button onclick="showPage('dashboard')">📊 Dashboard</button>
+        <button onclick="showPage('suggestions')">💡 Suggestions</button>
+    </div>
+
+    <div id="upload" class="container">
+        <h2>Upload Receipt Photo</h2>
+        <input type="file" id="receiptImg" accept="image/*">
+        <div id="preview"></div>
+        <div id="extracted"></div>
+        <button onclick="processReceipt()" style="margin-top: 10px; padding: 10px; background: #2196F3; color: white; border: none; border-radius: 5px;">Analyze & Save</button>
+    </div>
+
+    <div id="dashboard" class="container">
+        <h2>Monthly Overview</h2>
+        <div id="totalSpent" class="metric">$0.00</div>
+        <canvas id="pieChart"></canvas>
+        <h3>Receipt List</h3>
+        <table id="receiptTable">
+            <thead><tr><th>Date</th><th>Amount</th><th>Category</th><th>Notes</th></tr></thead>
+            <tbody></tbody>
+        </table>
+    </div>
+
+    <div id="suggestions" class="container">
+        <h2>Savings Tips</h2>
+        <div id="tips"></div>
+    </div>
+
+    <script>
+        let receipts = JSON.parse(localStorage.getItem('receipts')) || [];
+        let currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
+
+        function showPage(page) {
+            document.querySelectorAll('.container').forEach(el => el.style.display = 'none');
+            document.getElementById(page).style.display = 'block';
+            document.querySelectorAll('.nav button').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            if (page === 'dashboard') updateDashboard();
+            if (page === 'suggestions') updateSuggestions();
+        }
+
+        function processReceipt() {
+            const file = document.getElementById('receiptImg').files[0];
+            if (!file) return alert('Select an image!');
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                document.getElementById('preview').innerHTML = `<img src="${e.target.result}" style="max-width:100%;">`;
+                Tesseract.recognize(e.target.result, 'eng', { logger: m => console.log(m) }).then(({ data: { text } }) => {
+                    const amount = extractAmount(text);
+                    const date = extractDate(text);
+                    const category = categorize(text);
+                    document.getElementById('extracted').innerHTML = `
+                        <strong>Extracted:</strong><br>
+                        Date: <input type="text" id="editDate" value="${date}" placeholder="MM/DD/YYYY"><br>
+                        Amount: $<input type="number" id="editAmount" value="${amount}" step="0.01"><br>
+                        Category: <select id="editCategory">${categories.map(cat => `<option ${cat === category ? 'selected' : ''}>${cat}</option>`).join('')}</select><br>
+                        Text: <textarea readonly>${text.slice(0,200)}...</textarea>
+                    `;
+                });
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function saveReceipt() {
+            const date = document.getElementById('editDate').value || extractDate('');
+            const amount = parseFloat(document.getElementById('editAmount').value) || 0;
+            const category = document.getElementById('editCategory').value;
+            const text = ''; // Full text from OCR, truncated for storage
+            const img = document.getElementById('receiptImg').files[0] ? URL.createObjectURL(document.getElementById('receiptImg').files[0]) : '';
+            receipts.push({ date, amount, category, text, img, id: Date.now() });
+            localStorage.setItem('receipts', JSON.stringify(receipts));
+            alert('Saved! View Dashboard.');
+            showPage('dashboard');
+        }
+
+        // Add save button after extraction
+        document.getElementById('extracted').addEventListener('DOMSubtreeModified', () => {
+            if (document.getElementById('extracted').innerHTML) {
+                const saveBtn = document.createElement('button');
+                saveBtn.innerText = 'Save Edited';
+                saveBtn.onclick = saveReceipt;
+                saveBtn.style.marginTop = '10px';
+                document.getElementById('extracted').appendChild(saveBtn);
+            }
+        });
+
+        // Extraction functions
+        function extractAmount(text) {
+            const match = text.match(/\$?(\d+\.?\d{0,2})/);
+            return match ? parseFloat(match[1]) : 0;
+        }
+
+        function extractDate(text) {
+            const match = text.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
+            return match ? match[1] : new Date().toLocaleDateString('en-US');
+        }
+
+        const categories = ['Groceries', 'Dining', 'Utilities', 'Transport', 'Entertainment', 'Other'];
+        function categorize(text) {
+            const lower = text.toLowerCase();
+            if (lower.includes('grocery') || lower.includes('walmart')) return 'Groceries';
+            if (lower.includes('restaurant') || lower.includes('starbucks')) return 'Dining';
+            if (lower.includes('electric') || lower.includes('water')) return 'Utilities';
+            if (lower.includes('gas') || lower.includes('uber')) return 'Transport';
+            if (lower.includes('movie') || lower.includes('netflix')) return 'Entertainment';
+            return 'Other';
+        }
+
+        function updateDashboard() {
+            const monthly = receipts.filter(r => new Date(r.date).toISOString().slice(0,7) === currentMonth);
+            const total = monthly.reduce((sum, r) => sum + r.amount, 0);
+            document.getElementById('totalSpent').textContent = `$${total.toFixed(2)}`;
+
+            const catTotals = {};
+            monthly.forEach(r => catTotals[r.category] = (catTotals[r.category] || 0) + r.amount);
+
+            const ctx = document.getElementById('pieChart').getContext('2d');
+            if (window.pieChart) window.pieChart.destroy();
+            window.pieChart = new Chart(ctx, {
+                type: 'pie',
+                data: { labels: Object.keys(catTotals), datasets: [{ data: Object.values(catTotals), backgroundColor: ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF', '#FF9F40'] }] },
+                options: { responsive: true }
+            });
+
+            const tbody = document.querySelector('#receiptTable tbody');
+            tbody.innerHTML = monthly.map(r => `<tr><td>${r.date}</td><td>$${r.amount.toFixed(2)}</td><td>${r.category}</td><td>${r.text.slice(0,50)}...</td></tr>`).join('');
+        }
+
+        function updateSuggestions() {
+            const monthly = receipts.filter(r => new Date(r.date).toISOString().slice(0,7) === currentMonth);
+            if (monthly.length === 0) return document.getElementById('tips').innerHTML = '<p>No data yet. Upload receipts!</p>';
+            const total = monthly.reduce((sum, r) => sum + r.amount, 0);
+            const catTotals = {};
+            monthly.forEach(r => catTotals[r.category] = (catTotals[r.category] || 0) + r.amount);
+            const highSpend = Object.entries(catTotals).filter(([cat, amt]) => amt > total * 0.2);
+
+            let tips = highSpend.map(([cat, amt]) => {
+                let suggestion = '';
+                if (cat === 'Dining') suggestion = `Try cooking at home 2x/week to save ~$${ (amt * 0.3).toFixed(2) }`;
+                else if (cat === 'Groceries') suggestion = `Plan meals weekly to cut impulse buys by 15%`;
+                else if (cat === 'Entertainment') suggestion = `Opt for free apps/events to reduce by 20%`;
+                else suggestion = `Review patterns to trim 10%`;
+                return `<div class="suggestion warning"><strong>${cat} ($${amt.toFixed(2)}):</strong> ${suggestion}</div>`;
+            }).join('');
+            if (highSpend.length === 0) tips = '<div class="suggestion info">Great job! Spending is balanced. Aim to maintain.</div>';
+            tips += `<div class="suggestion info">Overall: Potential savings $${ (total * 0.1).toFixed(2) }/month by optimizing.</div>`;
+            document.getElementById('tips').innerHTML = tips;
+        }
+
+        // Init
+        showPage('upload');
+    </script>
+</body>
+</html>
